@@ -1,0 +1,40 @@
+# ── Python ────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+*.egg
+
+# ── Jupyter ───────────────────────────────
+.ipynb_checkpoints/
+
+# ── ML outputs ────────────────────────────
+ml_pipeline/data/
+ml_pipeline/reports/
+
+# model.pkl is committed so users don't need to retrain
+# If you want to exclude it, uncomment the next line:
+# api/model.pkl
+
+# ── Node / Next.js ────────────────────────
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+frontend/.env*.local
+
+# ── OS ────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ───────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo

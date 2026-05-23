@@ -1,0 +1,15 @@
+# OptiMPa — Phase 1 Python Dependencies
+# Install with: pip install -r requirements.txt
+
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+joblib>=1.3.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+ucimlrepo>=0.0.3      # Official UCI ML Repository Python client (replaces manual CSV download)
+
+# Jupyter (for the .ipynb notebook)
+jupyter>=1.0.0
+notebook>=7.0.0
+ipykernel>=6.25.0
