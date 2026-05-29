@@ -21,6 +21,46 @@ interface PredictionResult {
   input_summary: ConcreteFeatures;
 }
 
+interface ExplanationResult {
+  predicted_strength: number;
+  base_value: number;
+  shap_values: Record<string, number>;
+  engineered_features: Record<string, number>;
+}
+
+const FEATURE_MAP: Record<string, { label: string; unit: string }> = {
+  cement: { label: "Cement", unit: "kg/m³" },
+  slag: { label: "Blast Furnace Slag", unit: "kg/m³" },
+  fly_ash: { label: "Fly Ash", unit: "kg/m³" },
+  water: { label: "Water", unit: "kg/m³" },
+  superplasticizer: { label: "Superplasticizer", unit: "kg/m³" },
+  coarse_agg: { label: "Coarse Aggregate", unit: "kg/m³" },
+  fine_agg: { label: "Fine Aggregate", unit: "kg/m³" },
+  age: { label: "Curing Age", unit: "days" },
+  wc_ratio: { label: "Water/Cement Ratio", unit: "" },
+  binder_total: { label: "Total Binder", unit: "kg/m³" },
+  wb_ratio: { label: "Water/Binder Ratio", unit: "" },
+  fine_coarse_ratio: { label: "Fine/Coarse Agg. Ratio", unit: "" },
+  slag_cement_ratio: { label: "Slag/Cement Ratio", unit: "" },
+  fly_ash_cement_ratio: { label: "Fly Ash/Cement Ratio", unit: "" },
+};
+
+function getFeatureValue(key: string, inputs: ConcreteFeatures, eng: Record<string, number>) {
+  if (key in inputs) {
+    return `${inputs[key as keyof ConcreteFeatures]} ${FEATURE_MAP[key]?.unit || ""}`.trim();
+  }
+  if (key in eng) {
+    return `${eng[key]} ${FEATURE_MAP[key]?.unit || ""}`.trim();
+  }
+  if (key === "slag_cement_ratio") {
+    return (inputs.slag / (inputs.cement + 1e-6)).toFixed(3);
+  }
+  if (key === "fly_ash_cement_ratio") {
+    return (inputs.fly_ash / (inputs.cement + 1e-6)).toFixed(3);
+  }
+  return "";
+}
+
 // ─── Slider configs ───────────────────────────────────────────────────────────
 
 const SLIDERS = [
@@ -145,6 +185,7 @@ function Card({ children, style }: { children: React.ReactNode; style?: React.CS
 export default function Home() {
   const [values, setValues]   = useState<ConcreteFeatures>(DEFAULTS);
   const [result, setResult]   = useState<PredictionResult | null>(null);
+  const [explanation, setExplanation] = useState<ExplanationResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState<string | null>(null);
 
@@ -155,6 +196,7 @@ export default function Home() {
   const handleReset = useCallback(() => {
     setValues(DEFAULTS);
     setResult(null);
+    setExplanation(null);
     setError(null);
   }, []);
 
@@ -162,16 +204,33 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/predict`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values),
-      });
-      if (!res.ok) {
-        const e = await res.json().catch(() => ({}));
-        throw new Error((e as { detail?: string }).detail ?? `Error ${res.status}`);
+      const [predRes, expRes] = await Promise.all([
+        fetch(`${API}/predict`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(values),
+        }),
+        fetch(`${API}/explain`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(values),
+        })
+      ]);
+
+      if (!predRes.ok) {
+        const e = await predRes.json().catch(() => ({}));
+        throw new Error((e as { detail?: string }).detail ?? `Error ${predRes.status}`);
       }
-      setResult(await res.json());
+      if (!expRes.ok) {
+        const e = await expRes.json().catch(() => ({}));
+        throw new Error((e as { detail?: string }).detail ?? `Error ${expRes.status}`);
+      }
+
+      const predData = await predRes.json();
+      const expData = await expRes.json();
+
+      setResult(predData);
+      setExplanation(expData);
     } catch (e) {
       setError(
         e instanceof Error
@@ -189,6 +248,21 @@ export default function Home() {
   const wc = result
     ? (result.input_summary.water / result.input_summary.cement).toFixed(3)
     : null;
+
+  const sortedShap = explanation
+    ? Object.entries(explanation.shap_values)
+        .map(([key, value]) => ({
+          key,
+          label: FEATURE_MAP[key]?.label || key,
+          val: getFeatureValue(key, values, explanation.engineered_features),
+          shapVal: value,
+        }))
+        .sort((a, b) => Math.abs(b.shapVal) - Math.abs(a.shapVal))
+    : [];
+
+  const maxShap = explanation
+    ? Math.max(...Object.values(explanation.shap_values).map(Math.abs), 1.0)
+    : 1.0;
 
   return (
     <>
@@ -226,7 +300,7 @@ export default function Home() {
               border: "1px solid var(--border-accent)",
             }}
           >
-            RF Model
+            XGBoost Model
           </span>
         </div>
         <span style={{ fontSize: 12, color: "var(--text-3)", display: "none" }} className="sm-show">
@@ -258,8 +332,8 @@ export default function Home() {
           </span>
         </h1>
         <p style={{ fontSize: 15, color: "var(--text-2)", maxWidth: 520, margin: "0 auto", lineHeight: 1.65 }}>
-          Dial in your concrete mix design. A Random Forest trained on the UCI
-          Concrete dataset returns the predicted compressive strength and EN&nbsp;206
+          Dial in your concrete mix design. An optimized XGBoost regressor trained on the UCI
+          Concrete dataset with civil engineering feature engineering returns the predicted compressive strength and EN&nbsp;206
           grade instantly.
         </p>
       </div>
@@ -428,6 +502,59 @@ export default function Home() {
             </Card>
           )}
 
+          {/* SHAP Explanation */}
+          {result && explanation && !error && (
+            <Card style={{ padding: "28px 24px", borderColor: "rgba(255,255,255,0.06)" }}>
+              <div className="anim-fadeUp">
+                <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--text-3)", marginBottom: 12 }}>
+                  SHAP Feature Contributions
+                </p>
+                <p style={{ fontSize: 12, color: "var(--text-2)", marginBottom: 20, lineHeight: 1.5 }}>
+                  How each factor pushed prediction from base average (<strong>{explanation.base_value.toFixed(1)} MPa</strong>) to predicted strength (<strong>{explanation.predicted_strength.toFixed(1)} MPa</strong>).
+                </p>
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {sortedShap.map(({ key, label, val, shapVal }) => {
+                    const isPos = shapVal >= 0;
+                    const absVal = Math.abs(shapVal);
+                    const pct = (absVal / maxShap) * 100;
+                    const barColor = isPos ? "#4fd1c5" : "#fc8181"; // Teal for positive, Coral for negative
+                    
+                    return (
+                      <div key={key} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 11 }}>
+                          <span style={{ fontWeight: 600, color: "var(--text-1)" }}>{label}</span>
+                          <span style={{ color: "var(--text-2)", fontSize: 10, fontVariantNumeric: "tabular-nums" }}>{val}</span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          {/* Bi-directional bar chart */}
+                          <div style={{ flex: 1, position: "relative", height: 8, background: "rgba(255,255,255,0.03)", borderRadius: 99, overflow: "hidden" }}>
+                            {/* Center line */}
+                            <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, backgroundColor: "rgba(255,255,255,0.12)", zIndex: 2 }} />
+                            {/* The bar */}
+                            <div
+                              style={{
+                                position: "absolute",
+                                left: isPos ? "50%" : `${50 - (pct * 0.5)}%`,
+                                width: `${pct * 0.5}%`,
+                                height: "100%",
+                                backgroundColor: barColor,
+                                borderRadius: 99,
+                              }}
+                            />
+                          </div>
+                          {/* Contribution label */}
+                          <span style={{ fontSize: 11, fontWeight: 700, color: barColor, fontVariantNumeric: "tabular-nums", width: 62, textAlign: "right" }}>
+                            {isPos ? "+" : ""}{shapVal.toFixed(2)}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </Card>
+          )}
+
           {/* Empty state */}
           {!result && !error && !loading && (
             <Card style={{ padding: "40px 28px", textAlign: "center" }}>
@@ -481,7 +608,7 @@ export default function Home() {
         }}
       >
         <p style={{ fontSize: 11, color: "var(--text-3)" }}>
-          OptiMPa · Random Forest trained on UCI Concrete Compressive Strength (I-Cheng Yeh, 1998)
+          OptiMPa · XGBoost Model trained on UCI Concrete Compressive Strength (I-Cheng Yeh, 1998) with physical feature engineering & leak-free validation
         </p>
       </footer>
 

@@ -25,6 +25,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+import shap
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
@@ -42,19 +43,20 @@ MODEL_PATH = Path(__file__).parent / "model.pkl"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Load the Random Forest model from disk once when the server starts.
-    Using joblib ensures efficient deserialization of numpy arrays inside the RF.
-    The model object is stored in _model_store["rf"] for request handlers.
+    Load the XGBoost model and initialize SHAP TreeExplainer at startup.
+    The model object is stored in _model_store["rf"] for backward compatibility.
     """
     if not MODEL_PATH.exists():
         raise FileNotFoundError(
             f"model.pkl not found at {MODEL_PATH}. "
-            "Run ml_pipeline/train.py first to generate the model artifact."
+            "Run ml_pipeline/train_xgboost.py first to generate the model artifact."
         )
-    _model_store["rf"] = joblib.load(MODEL_PATH)
-    print(f"[OK] Model loaded from {MODEL_PATH}")
+    model = joblib.load(MODEL_PATH)
+    _model_store["rf"] = model
+    _model_store["explainer"] = shap.TreeExplainer(model)
+    print(f"[OK] Model and SHAP Explainer loaded from {MODEL_PATH}")
     yield
-    # Cleanup on shutdown (nothing to release for joblib RF)
+    # Cleanup on shutdown
     _model_store.clear()
 
 
@@ -186,6 +188,16 @@ class PredictionResponse(BaseModel):
     input_summary: dict  = Field(..., description="Validated input features")
 
 
+class ExplanationResponse(BaseModel):
+    """
+    API response schema for SHAP local explainability.
+    """
+    predicted_strength: float = Field(..., description="Predicted compressive strength [MPa]")
+    base_value: float = Field(..., description="SHAP base value (mean prediction)")
+    shap_values: dict[str, float] = Field(..., description="SHAP value for each feature contribution")
+    engineered_features: dict[str, float] = Field(..., description="Values of engineered features")
+
+
 class HealthResponse(BaseModel):
     status: str
     model_loaded: bool
@@ -251,20 +263,17 @@ async def predict(features: ConcreteFeatures):
 
     Flow:
       1. Pydantic validates the 8 input features (type + range).
-      2. Features are assembled into a (1, 8) numpy array in the exact
-         column order the Random Forest was trained on.
-      3. The RF predicts one value → compressive strength in MPa.
-      4. The result is mapped to an EN 206 concrete grade for CE context.
-      5. Response is returned as JSON.
-
-    The column order MUST match the training order in train.py:
-      cement, slag, fly_ash, water, superplasticizer, coarse_agg, fine_agg, age
+      2. Features are assembled into a (1, 8) DataFrame.
+      3. Physical feature engineering is applied.
+      4. Features are ordered to match training column order.
+      5. The XGBoost model predicts the compressive strength.
+      6. The result is mapped to an EN 206 concrete grade.
+      7. Response is returned as JSON.
     """
     if "rf" not in _model_store:
         raise HTTPException(status_code=503, detail="Model not loaded yet. Try again in a moment.")
 
-    # Assemble named DataFrame — column order must match training (train.py)
-    # Using DataFrame instead of raw numpy array suppresses sklearn's feature-name warning
+    # Assemble base features DataFrame
     feature_vector = pd.DataFrame([{
         "cement"          : features.cement,
         "slag"            : features.slag,
@@ -276,17 +285,99 @@ async def predict(features: ConcreteFeatures):
         "age"             : features.age,
     }])
 
-    # Predict — RF.predict returns shape (1,), so we take [0]
+    # Apply physical feature engineering (must match train_xgboost.py)
+    feature_vector["wc_ratio"] = feature_vector["water"] / (feature_vector["cement"] + 1e-6)
+    feature_vector["binder_total"] = feature_vector["cement"] + feature_vector["slag"] + feature_vector["fly_ash"]
+    feature_vector["wb_ratio"] = feature_vector["water"] / (feature_vector["binder_total"] + 1e-6)
+    feature_vector["fine_coarse_ratio"] = feature_vector["fine_agg"] / (feature_vector["coarse_agg"] + 1e-6)
+    feature_vector["slag_cement_ratio"] = feature_vector["slag"] / (feature_vector["cement"] + 1e-6)
+    feature_vector["fly_ash_cement_ratio"] = feature_vector["fly_ash"] / (feature_vector["cement"] + 1e-6)
+
+    # Force exact column order as expected by XGBoost training
+    FEATURES_ORDER = [
+        "cement", "slag", "fly_ash", "water", "superplasticizer", "coarse_agg", "fine_agg", "age",
+        "wc_ratio", "binder_total", "wb_ratio", "fine_coarse_ratio", "slag_cement_ratio", "fly_ash_cement_ratio"
+    ]
+    feature_vector = feature_vector[FEATURES_ORDER]
+
+    # Predict — model.predict returns shape (1,), so we take [0]
     raw_prediction: float = float(_model_store["rf"].predict(feature_vector)[0])
 
-    # Clamp to physically meaningful range (RF can occasionally predict slightly
-    # negative values for very lean mixes at early ages)
+    # Clamp to physically meaningful range (strength >= 0.0)
     strength_mpa = round(max(raw_prediction, 0.0), 2)
 
     return PredictionResponse(
         strength_mpa=strength_mpa,
         strength_grade=_to_en206_grade(strength_mpa),
         input_summary=features.model_dump(),
+    )
+
+
+@app.post("/explain", response_model=ExplanationResponse, tags=["Explainability"])
+async def explain(features: ConcreteFeatures):
+    """
+    Generates local SHAP explanations for a specific mix design.
+    """
+    if "rf" not in _model_store or "explainer" not in _model_store:
+        raise HTTPException(status_code=503, detail="Model/Explainer not loaded yet.")
+
+    # Assemble base features DataFrame
+    feature_vector = pd.DataFrame([{
+        "cement"          : features.cement,
+        "slag"            : features.slag,
+        "fly_ash"         : features.fly_ash,
+        "water"           : features.water,
+        "superplasticizer": features.superplasticizer,
+        "coarse_agg"      : features.coarse_agg,
+        "fine_agg"        : features.fine_agg,
+        "age"             : features.age,
+    }])
+
+    # Apply physical feature engineering
+    feature_vector["wc_ratio"] = feature_vector["water"] / (feature_vector["cement"] + 1e-6)
+    feature_vector["binder_total"] = feature_vector["cement"] + feature_vector["slag"] + feature_vector["fly_ash"]
+    feature_vector["wb_ratio"] = feature_vector["water"] / (feature_vector["binder_total"] + 1e-6)
+    feature_vector["fine_coarse_ratio"] = feature_vector["fine_agg"] / (feature_vector["coarse_agg"] + 1e-6)
+    feature_vector["slag_cement_ratio"] = feature_vector["slag"] / (feature_vector["cement"] + 1e-6)
+    feature_vector["fly_ash_cement_ratio"] = feature_vector["fly_ash"] / (feature_vector["cement"] + 1e-6)
+
+    # Force exact column order
+    FEATURES_ORDER = [
+        "cement", "slag", "fly_ash", "water", "superplasticizer", "coarse_agg", "fine_agg", "age",
+        "wc_ratio", "binder_total", "wb_ratio", "fine_coarse_ratio", "slag_cement_ratio", "fly_ash_cement_ratio"
+    ]
+    feature_vector = feature_vector[FEATURES_ORDER]
+
+    # Predict
+    raw_prediction: float = float(_model_store["rf"].predict(feature_vector)[0])
+    strength_mpa = round(max(raw_prediction, 0.0), 2)
+
+    # Compute SHAP Values
+    explainer = _model_store["explainer"]
+    shap_results = explainer(feature_vector)
+
+    # shap_results.base_values is an array of shape (1,) or float
+    base_value = float(shap_results.base_values[0])
+    
+    # Extract contributions
+    shap_contribs = {
+        feat: float(shap_results.values[0, i])
+        for i, feat in enumerate(FEATURES_ORDER)
+    }
+
+    # Extract engineered features for output summary
+    eng_feats = {
+        "wc_ratio": round(float(feature_vector["wc_ratio"].iloc[0]), 3),
+        "binder_total": round(float(feature_vector["binder_total"].iloc[0]), 2),
+        "wb_ratio": round(float(feature_vector["wb_ratio"].iloc[0]), 3),
+        "fine_coarse_ratio": round(float(feature_vector["fine_coarse_ratio"].iloc[0]), 3),
+    }
+
+    return ExplanationResponse(
+        predicted_strength=strength_mpa,
+        base_value=round(base_value, 2),
+        shap_values={k: round(v, 4) for k, v in shap_contribs.items()},
+        engineered_features=eng_feats,
     )
 
 

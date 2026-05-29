@@ -13,3 +13,10 @@ ucimlrepo>=0.0.3      # Official UCI ML Repository Python client (replaces manua
 jupyter>=1.0.0
 notebook>=7.0.0
 ipykernel>=6.25.0
+
+# Upgraded Pipeline Dependencies
+xgboost>=1.7.0,<2.0.0
+optuna>=3.0.0
+shap>=0.42.0
+
+
