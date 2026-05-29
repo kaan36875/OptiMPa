@@ -4,6 +4,8 @@
 [![Scikit-Learn](https://img.shields.io/badge/Machine%20Learning-Scikit--Learn-orange.svg)](https://scikit-learn.org/)
 [![Pandas](https://img.shields.io/badge/Data%20Analysis-Pandas-green.svg)](https://pandas.pydata.org/)
 [![Status](https://img.shields.io/badge/Status-Refactored%20%26%20Released-success.svg)]()
+[![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi)](https://fastapi.tiangolo.com/)
+[![Next.js](https://img.shields.io/badge/Next.js-black?style=flat&logo=next.js)](https://nextjs.org/)
 
 📌 **Academic Research Open-Source Release (May 2026)**  
 *This repository serves as the official open-source release and refactored codebase for my academic research, originally developed and presented as an academic poster in May 2026. As I prepare to transition into graduate studies in Data Science and Business Analytics, I have refactored and published these predictive models to ensure methodological transparency, encourage peer review, and demonstrate the reproducibility of my analytical pipelines.*
@@ -16,6 +18,8 @@ Predicting the compressive strength and environmental impact (Global Warming Pot
 
 This codebase migrates a baseline Random Forest regressor to an optimized **XGBoost Regressor** featuring **civil engineering domain feature engineering**, **leak-free validation via GroupKFold split**, **automated hyperparameter tuning (Optuna)**, and **Shapley Additive exPlanations (SHAP)**.
 
+From a business analytics perspective, OptiMPa serves as an MVP that reduces physical R&D testing costs, accelerates time-to-market for sustainable concrete mixes, and provides actionable ESG compliance data.
+
 ---
 
 ![Frontend Preview](frontend/preview.png)
@@ -25,7 +29,7 @@ This codebase migrates a baseline Random Forest regressor to an optimized **XGBo
 Most concrete predictive pipelines suffer from critical methodological shortcomings:
 1. **Data Leakage in Random Splits:** Concrete mixtures are tested at multiple ages (e.g., 3, 7, 28, 90 days). A naive random split (like `train_test_split`) separates observations of the *same mix formulation* between training and test sets. This results in severe data leakage and artificially inflated metrics.
 2. **Lack of Physical Guardrails:** Standard ML models treat ingredients (cement, slag, water, aggregate) as independent dimensions, failing to capture fundamental physical laws governing hydration and curing.
-
+3. **Dual-Objective Prediction (Strength + LCA):** While predicting structural capacity, the pipeline simultaneously maps the material proportions to global warming potential (GWP) indices, allowing engineers to visualize the exact carbon cost per MPa of strength gained.
 OptiMPa addresses these bottlenecks through the following pipeline:
 
 ```mermaid
@@ -79,7 +83,7 @@ The SHAP summary plot ranks features by their impact on model output. Crucially,
 ![SHAP Summary Plot](ml_pipeline/example_reports/shap_summary.png)
 
 ### Local Explanations (API + UI)
-For every single prediction requested, the FastAPI backend computes local Shapley values via a TreeExplainer. The interactive React/Next.js frontend maps these contributions in a **bi-directional force-style bar chart**, allowing engineers to inspect exactly which materials (and by how many MPa) boosted or reduced the predicted structural strength.
+For every single prediction requested, the FastAPI backend computes local Shapley values via a TreeExplainer. The interactive React/Next.js frontend, designed with a sleek, minimalist dark-mode aesthetic, maps these contributions in a **bi-directional force-style bar chart**, allowing engineers to inspect exactly which materials (and by how many MPa) boosted or reduced the predicted structural strength.
 
 ---
 
