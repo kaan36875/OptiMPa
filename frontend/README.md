@@ -1,6 +1,6 @@
 # OptiMPa — website
 
-Next.js site for OptiMPa. The project description, model details and results are in the [main README](../README.md).
+Next.js site for OptiMPa, live at **[opti-m-pa.vercel.app](https://opti-m-pa.vercel.app/)**. The project description, model details and results are in the [main README](../README.md).
 
 Everything runs in the browser; there is no backend:
 
@@ -37,4 +37,4 @@ npm run test:ifc     # IFC reader on ../bim/examples/sample_building.ifc
 
 ## Deploying to Vercel
 
-Import the repository and set **Root Directory** to `frontend`. No other settings or environment variables are needed.
+Import the repository and set **Root Directory** to `frontend`. No other settings or environment variables are needed. The live site redeploys on every push to `main`.

@@ -5,6 +5,8 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi)](https://fastapi.tiangolo.com/)
 [![Next.js](https://img.shields.io/badge/Next.js-black?style=flat&logo=next.js)](https://nextjs.org/)
 
+**Live site: [opti-m-pa.vercel.app](https://opti-m-pa.vercel.app/)** · [Predictor](https://opti-m-pa.vercel.app/) · [BIM carbon](https://opti-m-pa.vercel.app/bim) · [Model](https://opti-m-pa.vercel.app/model)
+
 This is the code behind the academic poster I presented in May 2026. I cleaned it up and published it so the method and the numbers can be checked and reproduced.
 
 OptiMPa predicts the compressive strength of a concrete mix (in MPa) from its ingredients and curing age, and estimates the mix's embodied carbon. It is trained on the UCI Concrete Compressive Strength dataset (Yeh, 1998).
@@ -139,7 +141,7 @@ npm run dev
 
 Then open `http://localhost:3000`. To check the browser model and IFC reader: `npm run test:model` and `npm run test:ifc`.
 
-**Deploying to Vercel:** import the repository and set **Root Directory** to `frontend`. Everything else is the default (Next.js, `npm run build`). The pages are static, so no server or environment variables are needed.
+**Deploying to Vercel:** import the repository and set **Root Directory** to `frontend`. Everything else is the default (Next.js, `npm run build`). The pages are static, so no server or environment variables are needed. The live site at [opti-m-pa.vercel.app](https://opti-m-pa.vercel.app/) is deployed this way and updates on every push to `main`.
 
 **API** (optional)
 
