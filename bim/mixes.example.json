@@ -1,0 +1,19 @@
+{
+  "_comment": "Example mixes in kg per m3 of concrete (age in days, used only for the OptiMPa strength check). Keys are strength classes as they appear in the IFC file; 'default' is used for concrete elements without a class or without a matching mix. Replace these with your own mix designs.",
+  "C25/30": {
+    "cement": 260, "slag": 0, "fly_ash": 80, "water": 175, "superplasticizer": 4,
+    "coarse_agg": 1040, "fine_agg": 790, "age": 28
+  },
+  "C30/37": {
+    "cement": 330, "slag": 0, "fly_ash": 0, "water": 165, "superplasticizer": 6,
+    "coarse_agg": 1040, "fine_agg": 780, "age": 28
+  },
+  "C35/45": {
+    "cement": 380, "slag": 0, "fly_ash": 0, "water": 155, "superplasticizer": 8,
+    "coarse_agg": 1030, "fine_agg": 760, "age": 28
+  },
+  "default": {
+    "cement": 330, "slag": 0, "fly_ash": 0, "water": 165, "superplasticizer": 6,
+    "coarse_agg": 1040, "fine_agg": 780, "age": 28
+  }
+}

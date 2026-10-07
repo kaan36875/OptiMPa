@@ -1,90 +1,12 @@
 "use client";
 
-import { useState, useCallback } from "react";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface ConcreteFeatures {
-  cement: number;
-  slag: number;
-  fly_ash: number;
-  water: number;
-  superplasticizer: number;
-  coarse_agg: number;
-  fine_agg: number;
-  age: number;
-}
-
-interface PredictionResult {
-  strength_mpa: number;
-  strength_grade: string;
-  input_summary: ConcreteFeatures;
-}
-
-interface ExplanationResult {
-  predicted_strength: number;
-  strength_grade: string;
-  base_value: number;
-  shap_values: Record<string, number>;
-  engineered_features: Record<string, number>;
-}
-
-const FEATURE_MAP: Record<string, { label: string; unit: string }> = {
-  cement: { label: "Cement", unit: "kg/m³" },
-  slag: { label: "Blast Furnace Slag", unit: "kg/m³" },
-  fly_ash: { label: "Fly Ash", unit: "kg/m³" },
-  water: { label: "Water", unit: "kg/m³" },
-  superplasticizer: { label: "Superplasticizer", unit: "kg/m³" },
-  coarse_agg: { label: "Coarse Aggregate", unit: "kg/m³" },
-  fine_agg: { label: "Fine Aggregate", unit: "kg/m³" },
-  age: { label: "Curing Age", unit: "days" },
-  wc_ratio: { label: "Water/Cement Ratio", unit: "" },
-  binder_total: { label: "Total Binder", unit: "kg/m³" },
-  wb_ratio: { label: "Water/Binder Ratio", unit: "" },
-  fine_coarse_ratio: { label: "Fine/Coarse Agg. Ratio", unit: "" },
-  slag_cement_ratio: { label: "Slag/Cement Ratio", unit: "" },
-  fly_ash_cement_ratio: { label: "Fly Ash/Cement Ratio", unit: "" },
-};
-
-function getFeatureValue(key: string, inputs: ConcreteFeatures, eng: Record<string, number>) {
-  if (key in inputs) {
-    return `${inputs[key as keyof ConcreteFeatures]} ${FEATURE_MAP[key]?.unit || ""}`.trim();
-  }
-  if (key in eng) {
-    return `${eng[key]} ${FEATURE_MAP[key]?.unit || ""}`.trim();
-  }
-  if (key === "slag_cement_ratio") {
-    return (inputs.slag / (inputs.cement + 1e-6)).toFixed(3);
-  }
-  if (key === "fly_ash_cement_ratio") {
-    return (inputs.fly_ash / (inputs.cement + 1e-6)).toFixed(3);
-  }
-  return "";
-}
-
-// ─── Slider configs ───────────────────────────────────────────────────────────
-
-const SLIDERS = [
-  { key: "cement"          as const, label: "Cement",             unit: "kg/m³", min: 100, max: 700, step: 5,   def: 350, note: "Primary binder — drives early strength" },
-  { key: "slag"            as const, label: "Blast Furnace Slag", unit: "kg/m³", min: 0,   max: 360, step: 5,   def: 0,   note: "Latent hydraulic binder — boosts long-term strength" },
-  { key: "fly_ash"         as const, label: "Fly Ash",            unit: "kg/m³", min: 0,   max: 200, step: 5,   def: 0,   note: "Pozzolanic filler — reduces heat of hydration" },
-  { key: "water"           as const, label: "Water",              unit: "kg/m³", min: 120, max: 250, step: 1,   def: 175, note: "Lower w/c ratio → denser paste → higher strength" },
-  { key: "superplasticizer"as const, label: "Superplasticizer",   unit: "kg/m³", min: 0,   max: 32,  step: 0.5, def: 6,   note: "Maintains workability at low water content" },
-  { key: "coarse_agg"      as const, label: "Coarse Aggregate",   unit: "kg/m³", min: 800, max: 1150,step: 5,   def: 1040,note: "Structural skeleton — crushed stone or gravel" },
-  { key: "fine_agg"        as const, label: "Fine Aggregate",     unit: "kg/m³", min: 550, max: 1000,step: 5,   def: 755, note: "Sand — fills voids between coarse particles" },
-  { key: "age"             as const, label: "Curing Age",         unit: "days",  min: 1,   max: 365, step: 1,   def: 28,  note: "28 days = standard reference per EN 206" },
-];
-
-const DEFAULTS: ConcreteFeatures = {
-  cement: 350,
-  slag: 0,
-  fly_ash: 0,
-  water: 175,
-  superplasticizer: 6,
-  coarse_agg: 1040,
-  fine_agg: 755,
-  age: 28,
-};
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { BarRow, Card, Label, Note, Stat, fmt } from "./components/ui";
+import { CARBON_MATERIALS, mixCarbon, referenceMix } from "./lib/carbon";
+import { DEFAULT_MIX, FEATURE_LABELS, SLIDERS, saveMix } from "./lib/mixes";
+import { en206Grade, explain, outOfRange, predict, type Mix } from "./lib/model";
+import { MODEL } from "./lib/modelData";
 
 // ─── Grade colour ─────────────────────────────────────────────────────────────
 
@@ -97,48 +19,49 @@ function gradeColor(grade: string) {
   return         { color: "#b794f4", label: "Ultra-High Strength" };
 }
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+function featureValue(key: string, mix: Mix) {
+  if (key in mix) {
+    const unit = SLIDERS.find((s) => s.key === key)?.unit ?? "";
+    return `${mix[key as keyof Mix]} ${unit}`;
+  }
+  const binder = mix.cement + mix.slag + mix.fly_ash;
+  const ratios: Record<string, number> = {
+    wc_ratio: mix.water / mix.cement,
+    wb_ratio: mix.water / binder,
+    fine_coarse_ratio: mix.fine_agg / mix.coarse_agg,
+    slag_cement_ratio: mix.slag / mix.cement,
+    fly_ash_cement_ratio: mix.fly_ash / mix.cement,
+  };
+  return key === "binder_total" ? `${binder} kg/m³` : (ratios[key] ?? 0).toFixed(3);
+}
 
-// ─── Component helpers ────────────────────────────────────────────────────────
+// ─── Slider row ───────────────────────────────────────────────────────────────
 
-/** A single labelled slider row */
 function SliderRow({
-  cfg,
-  value,
-  onChange,
+  cfg, value, onChange,
 }: {
   cfg: (typeof SLIDERS)[number];
   value: number;
-  onChange: (k: keyof ConcreteFeatures, v: number) => void;
+  onChange: (k: keyof Mix, v: number) => void;
 }) {
   const pct = ((value - cfg.min) / (cfg.max - cfg.min)) * 100;
-
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      {/* Label / value row */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-3)" }}>
+        <label htmlFor={`slider-${cfg.key}`} style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-2)" }}>
           {cfg.label}
-        </span>
+        </label>
         <span style={{ fontSize: 13, fontWeight: 700, color: "var(--accent)", fontVariantNumeric: "tabular-nums" }}>
           {value}
           <span style={{ fontSize: 10, fontWeight: 400, color: "var(--text-3)", marginLeft: 3 }}>{cfg.unit}</span>
         </span>
       </div>
-
-      {/* Slider track with accent fill */}
       <div style={{ position: "relative", height: 20, display: "flex", alignItems: "center" }}>
-        {/* Filled portion */}
         <div
           style={{
-            position: "absolute",
-            left: 0,
-            width: `${pct}%`,
-            height: 4,
-            borderRadius: 99,
+            position: "absolute", left: 0, width: `${pct}%`, height: 4, borderRadius: 99,
             background: "linear-gradient(90deg, rgba(99,179,237,0.35), var(--accent))",
-            pointerEvents: "none",
-            zIndex: 1,
+            pointerEvents: "none", zIndex: 1,
           }}
         />
         <input
@@ -150,11 +73,8 @@ function SliderRow({
           value={value}
           onChange={(e) => onChange(cfg.key, parseFloat(e.target.value))}
           style={{ position: "relative", zIndex: 2, width: "100%", margin: 0 }}
-          aria-label={cfg.label}
         />
       </div>
-
-      {/* Note / range */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
         <span style={{ fontSize: 11, color: "var(--text-3)", lineHeight: 1.45, flex: 1 }}>{cfg.note}</span>
         <span style={{ fontSize: 10, color: "var(--text-3)", whiteSpace: "nowrap", paddingTop: 1 }}>
@@ -165,419 +85,263 @@ function SliderRow({
   );
 }
 
-/** Card wrapper */
-function Card({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
-  return (
-    <div
-      style={{
-        background: "rgba(255,255,255,0.03)",
-        border: "1px solid rgba(255,255,255,0.07)",
-        borderRadius: 20,
-        backdropFilter: "blur(16px)",
-        ...style,
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-// ─── Main Page ────────────────────────────────────────────────────────────────
+// ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function Home() {
-  const [values, setValues]   = useState<ConcreteFeatures>(DEFAULTS);
-  const [result, setResult]   = useState<PredictionResult | null>(null);
-  const [explanation, setExplanation] = useState<ExplanationResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState<string | null>(null);
+  const [mix, setMix] = useState<Mix>(DEFAULT_MIX);
 
-  const handleChange = useCallback((k: keyof ConcreteFeatures, v: number) => {
-    setValues((p) => ({ ...p, [k]: v }));
+  // Remember the mix so the BIM page can use it
+  useEffect(() => saveMix(mix), [mix]);
+
+  const handleChange = useCallback((k: keyof Mix, v: number) => {
+    setMix((p) => ({ ...p, [k]: v }));
   }, []);
 
-  const handleReset = useCallback(() => {
-    setValues(DEFAULTS);
-    setResult(null);
-    setExplanation(null);
-    setError(null);
-  }, []);
+  const exp = useMemo(() => explain(MODEL, mix), [mix]);
+  const strength = Math.max(exp.prediction, 0);
+  const grade = en206Grade(strength);
+  const gc = gradeColor(grade);
+  const carbon = useMemo(() => mixCarbon(mix), [mix]);
+  const extrapolating = outOfRange(MODEL, mix);
 
-  const handlePredict = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      // /explain returns prediction + grade + SHAP, so one model run is enough
-      const expRes = await fetch(`${API}/explain`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values),
-      });
+  const ref = useMemo(() => {
+    const m = referenceMix(mix);
+    const s = Math.max(predict(MODEL, m), 0);
+    return { mix: m, strength: s, grade: en206Grade(s), carbon: mixCarbon(m).total, outOfRange: outOfRange(MODEL, m) };
+  }, [mix]);
+  const usesScm = mix.slag + mix.fly_ash > 0;
 
-      if (!expRes.ok) {
-        const e = (await expRes.json().catch(() => ({}))) as { detail?: string | { msg: string }[] };
-        // FastAPI validation errors (422) return a list of { loc, msg, ... }
-        const detail = Array.isArray(e.detail) ? e.detail.map((d) => d.msg).join("; ") : e.detail;
-        throw new Error(detail ?? `Error ${expRes.status}`);
-      }
+  const shapRows = Object.entries(exp.shap)
+    .map(([key, value]) => ({ key, label: FEATURE_LABELS[key] ?? key, val: featureValue(key, mix), value }))
+    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
+  const maxShap = Math.max(...shapRows.map((r) => Math.abs(r.value)), 1);
 
-      const expData: ExplanationResult = await expRes.json();
+  const carbonRows = CARBON_MATERIALS
+    .map((k) => ({ key: k, label: FEATURE_LABELS[k], value: carbon.byMaterial[k] }))
+    .sort((a, b) => b.value - a.value);
+  const maxCarbon = Math.max(...carbonRows.map((r) => r.value), 1);
 
-      setResult({
-        strength_mpa: expData.predicted_strength,
-        strength_grade: expData.strength_grade,
-        input_summary: values,
-      });
-      setExplanation(expData);
-    } catch (e) {
-      setError(
-        e instanceof Error
-          ? e.message.includes("fetch")
-            ? "Cannot reach the API — make sure FastAPI is running on port 8000."
-            : e.message
-          : "Unknown error"
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [values]);
-
-  const gc = result ? gradeColor(result.strength_grade) : null;
-  const wc = result
-    ? (result.input_summary.water / result.input_summary.cement).toFixed(3)
-    : null;
-
-  const sortedShap = explanation
-    ? Object.entries(explanation.shap_values)
-        .map(([key, value]) => ({
-          key,
-          label: FEATURE_MAP[key]?.label || key,
-          val: getFeatureValue(key, values, explanation.engineered_features),
-          shapVal: value,
-        }))
-        .sort((a, b) => Math.abs(b.shapVal) - Math.abs(a.shapVal))
-    : [];
-
-  const maxShap = explanation
-    ? Math.max(...Object.values(explanation.shap_values).map(Math.abs), 1.0)
-    : 1.0;
+  const wc = mix.water / mix.cement;
+  const wb = mix.water / (mix.cement + mix.slag + mix.fly_ash);
 
   return (
     <>
-      {/* ── Topnav ── */}
-      <nav
-        style={{
-          position: "sticky", top: 0, zIndex: 50,
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "0 32px", height: 60,
-          background: "rgba(8,8,15,0.85)",
-          backdropFilter: "blur(20px)",
-          borderBottom: "1px solid rgba(255,255,255,0.06)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div
-            style={{
-              width: 30, height: 30, borderRadius: 9,
-              background: "linear-gradient(135deg,#63b3ed,#76e4f7)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 14, fontWeight: 900, color: "#08080f",
-            }}
-          >
-            Ω
-          </div>
-          <span style={{ fontWeight: 800, fontSize: 15, color: "var(--text-1)", letterSpacing: "-0.02em" }}>
-            OptiMPa
-          </span>
-          <span
-            style={{
-              fontSize: 10, fontWeight: 700, letterSpacing: "0.08em",
-              padding: "3px 10px", borderRadius: 99,
-              background: "var(--accent-dim)",
-              color: "var(--accent)",
-              border: "1px solid var(--border-accent)",
-            }}
-          >
-            XGBoost Model
-          </span>
-        </div>
-        <span style={{ fontSize: 12, color: "var(--text-3)", display: "none" }} className="sm-show">
-          Concrete Compressive Strength Predictor
-        </span>
-      </nav>
-
       {/* ── Hero ── */}
-      <div
-        className="anim-fadeUp"
-        style={{ textAlign: "center", padding: "52px 24px 36px", position: "relative", zIndex: 1 }}
-      >
-        <h1
-          style={{
-            fontSize: "clamp(2rem, 5vw, 3.25rem)",
-            fontWeight: 900, letterSpacing: "-0.03em",
-            lineHeight: 1.1, color: "var(--text-1)", marginBottom: 16,
-          }}
-        >
+      <div className="anim-fadeUp" style={{ textAlign: "center", padding: "48px 24px 32px" }}>
+        <h1 style={{ fontSize: "clamp(2rem, 5vw, 3.1rem)", fontWeight: 900, letterSpacing: "-0.03em", lineHeight: 1.1, color: "var(--text-1)", marginBottom: 14 }}>
           Predict Concrete{" "}
-          <span
-            style={{
-              background: "linear-gradient(90deg,#63b3ed,#76e4f7)",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-            }}
-          >
+          <span style={{ background: "linear-gradient(90deg,#63b3ed,#76e4f7)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
             Strength
-          </span>
+          </span>{" "}
+          &amp; Carbon
         </h1>
-        <p style={{ fontSize: 15, color: "var(--text-2)", maxWidth: 520, margin: "0 auto", lineHeight: 1.65 }}>
-          Dial in your concrete mix design. An optimized XGBoost regressor trained on the UCI
-          Concrete dataset with civil engineering feature engineering returns the predicted compressive strength and EN&nbsp;206
-          grade instantly.
+        <p style={{ fontSize: 15, color: "var(--text-2)", maxWidth: 560, margin: "0 auto", lineHeight: 1.65 }}>
+          Set the mix design and see the predicted compressive strength, its EN&nbsp;206 class, what drives it,
+          and the mix&apos;s embodied carbon. Everything is calculated in your browser.
         </p>
       </div>
 
-      {/* ── Two-column layout ── */}
-      <div
-        className="two-col-grid"
-        style={{
-          position: "relative", zIndex: 1,
-          maxWidth: 1100,
-          margin: "0 auto",
-          padding: "0 24px 80px",
-          display: "grid",
-          gridTemplateColumns: "1fr 360px",
-          gap: 24,
-          alignItems: "start",
-        }}
-      >
-        {/* ── LEFT: Sliders ── */}
+      {/* ── Row 1: sliders + results ── */}
+      <div className="two-col-grid">
         <Card style={{ padding: 32 }}>
-          {/* Header */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
-            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--text-2)" }}>
-              Mix Design Parameters
-            </span>
+            <Label style={{ fontSize: 11, color: "var(--text-2)" }}>Mix Design Parameters</Label>
             <button
               id="reset-btn"
-              onClick={handleReset}
+              onClick={() => setMix(DEFAULT_MIX)}
               style={{
-                fontSize: 11, fontWeight: 600,
-                padding: "6px 14px", borderRadius: 10,
-                background: "rgba(255,255,255,0.04)",
-                border: "1px solid rgba(255,255,255,0.08)",
-                color: "var(--text-3)", cursor: "pointer",
-                transition: "all 0.18s",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = "var(--text-1)";
-                e.currentTarget.style.borderColor = "rgba(255,255,255,0.16)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = "var(--text-3)";
-                e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)";
+                fontSize: 11, fontWeight: 600, padding: "6px 14px", borderRadius: 10,
+                background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+                color: "var(--text-2)", cursor: "pointer",
               }}
             >
               Reset defaults
             </button>
           </div>
-
-          {/* Slider list */}
           <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
             {SLIDERS.map((cfg) => (
-              <SliderRow
-                key={cfg.key}
-                cfg={cfg}
-                value={values[cfg.key]}
-                onChange={handleChange}
-              />
+              <SliderRow key={cfg.key} cfg={cfg} value={mix[cfg.key]} onChange={handleChange} />
             ))}
           </div>
         </Card>
 
-        {/* ── RIGHT: Sticky panel ── */}
-        <div className="sticky-panel" style={{ position: "sticky", top: 80, display: "flex", flexDirection: "column", gap: 16 }}>
-
-          {/* Predict button */}
-          <button
-            id="predict-btn"
-            onClick={handlePredict}
-            disabled={loading}
-            style={{
-              width: "100%", padding: "16px 0",
-              borderRadius: 16, border: "none",
-              fontWeight: 800, fontSize: 15, letterSpacing: "-0.01em",
-              cursor: loading ? "not-allowed" : "pointer",
-              background: loading
-                ? "rgba(255,255,255,0.05)"
-                : "linear-gradient(135deg,#63b3ed,#76e4f7)",
-              color: loading ? "var(--text-3)" : "#08080f",
-              boxShadow: loading ? "none" : "0 0 32px rgba(99,179,237,0.25)",
-              transition: "all 0.2s",
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
-            }}
-          >
-            {loading ? (
-              <>
-                <span className="spinner" />
-                Predicting…
-              </>
-            ) : (
-              "Predict Strength"
-            )}
-          </button>
-
-          {/* Error */}
-          {error && (
-            <Card style={{ padding: "18px 20px", borderColor: "rgba(252,129,129,0.25)" }}>
-              <p style={{ fontSize: 11, fontWeight: 700, color: "#fc8181", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                Connection Error
-              </p>
-              <p style={{ fontSize: 12, color: "var(--text-2)", lineHeight: 1.5 }}>{error}</p>
-            </Card>
-          )}
-
-          {/* Result */}
-          {result && gc && !error && (
-            <Card
-              style={{ padding: "32px 28px", borderColor: `${gc.color}28` }}
-              key={result.strength_mpa}
-            >
-              <div className="anim-popIn">
-                {/* Label */}
-                <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.2em", textTransform: "uppercase", color: "var(--text-3)", textAlign: "center", marginBottom: 10 }}>
-                  Predicted Compressive Strength
-                </p>
-
-                {/* MPa number */}
-                <div style={{ textAlign: "center", marginBottom: 18 }}>
-                  <span
-                    style={{
-                      fontSize: 76, fontWeight: 900, lineHeight: 1,
-                      color: gc.color,
-                      textShadow: `0 0 48px ${gc.color}55`,
-                      fontVariantNumeric: "tabular-nums",
-                      display: "inline-block",
-                    }}
-                  >
-                    {result.strength_mpa.toFixed(1)}
-                  </span>
-                  <span style={{ fontSize: 22, fontWeight: 300, color: "var(--text-2)", marginLeft: 6, verticalAlign: "bottom", lineHeight: 1, display: "inline-block", paddingBottom: 6 }}>
-                    MPa
-                  </span>
-                </div>
-
-                {/* Grade badge */}
-                <div style={{ display: "flex", justifyContent: "center", marginBottom: 24 }}>
-                  <div
-                    style={{
-                      display: "inline-flex", alignItems: "center", gap: 10,
-                      padding: "8px 20px", borderRadius: 99,
-                      background: `${gc.color}14`,
-                      border: `1px solid ${gc.color}38`,
-                    }}
-                  >
-                    <div style={{ width: 7, height: 7, borderRadius: "50%", background: gc.color, boxShadow: `0 0 8px ${gc.color}` }} />
-                    <span style={{ fontWeight: 800, fontSize: 13, color: gc.color }}>{result.strength_grade}</span>
-                    <span style={{ fontSize: 11, color: "var(--text-2)", fontWeight: 500 }}>{gc.label}</span>
-                  </div>
-                </div>
-
-                {/* Stats */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
-                  {[
-                    { label: "w/c Ratio", val: wc,   sub: "≤0.45 durable" },
-                    { label: "Cement",    val: `${result.input_summary.cement}`, sub: "kg/m³" },
-                    { label: "Age",       val: `${result.input_summary.age}d`,   sub: result.input_summary.age === 28 ? "standard" : "custom" },
-                  ].map(({ label, val, sub }) => (
-                    <div key={label} style={{ textAlign: "center" }}>
-                      <p style={{ fontSize: 10, color: "var(--text-3)", marginBottom: 4, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.1em" }}>{label}</p>
-                      <p style={{ fontSize: 14, fontWeight: 800, color: "var(--text-1)", fontVariantNumeric: "tabular-nums" }}>{val}</p>
-                      <p style={{ fontSize: 10, color: "var(--text-3)" }}>{sub}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </Card>
-          )}
-
-          {/* SHAP Explanation */}
-          {result && explanation && !error && (
-            <Card style={{ padding: "28px 24px", borderColor: "rgba(255,255,255,0.06)" }}>
-              <div className="anim-fadeUp">
-                <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--text-3)", marginBottom: 12 }}>
-                  SHAP Feature Contributions
-                </p>
-                <p style={{ fontSize: 12, color: "var(--text-2)", marginBottom: 20, lineHeight: 1.5 }}>
-                  How each factor pushed prediction from base average (<strong>{explanation.base_value.toFixed(1)} MPa</strong>) to predicted strength (<strong>{explanation.predicted_strength.toFixed(1)} MPa</strong>).
-                </p>
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  {sortedShap.map(({ key, label, val, shapVal }) => {
-                    const isPos = shapVal >= 0;
-                    const absVal = Math.abs(shapVal);
-                    const pct = (absVal / maxShap) * 100;
-                    const barColor = isPos ? "#4fd1c5" : "#fc8181"; // Teal for positive, Coral for negative
-                    
-                    return (
-                      <div key={key} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 11 }}>
-                          <span style={{ fontWeight: 600, color: "var(--text-1)" }}>{label}</span>
-                          <span style={{ color: "var(--text-2)", fontSize: 10, fontVariantNumeric: "tabular-nums" }}>{val}</span>
-                        </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                          {/* Bi-directional bar chart */}
-                          <div style={{ flex: 1, position: "relative", height: 8, background: "rgba(255,255,255,0.03)", borderRadius: 99, overflow: "hidden" }}>
-                            {/* Center line */}
-                            <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, backgroundColor: "rgba(255,255,255,0.12)", zIndex: 2 }} />
-                            {/* The bar */}
-                            <div
-                              style={{
-                                position: "absolute",
-                                left: isPos ? "50%" : `${50 - (pct * 0.5)}%`,
-                                width: `${pct * 0.5}%`,
-                                height: "100%",
-                                backgroundColor: barColor,
-                                borderRadius: 99,
-                              }}
-                            />
-                          </div>
-                          {/* Contribution label */}
-                          <span style={{ fontSize: 11, fontWeight: 700, color: barColor, fontVariantNumeric: "tabular-nums", width: 62, textAlign: "right" }}>
-                            {isPos ? "+" : ""}{shapVal.toFixed(2)}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </Card>
-          )}
-
-          {/* Empty state */}
-          {!result && !error && !loading && (
-            <Card style={{ padding: "40px 28px", textAlign: "center" }}>
+        <div className="sticky-panel" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Strength */}
+          <Card style={{ padding: "28px 26px", borderColor: `${gc.color}28` }}>
+            <Label style={{ textAlign: "center", marginBottom: 10 }}>Predicted compressive strength</Label>
+            <div style={{ textAlign: "center", marginBottom: 16 }}>
+              <span id="strength-value" style={{ fontSize: 72, fontWeight: 900, lineHeight: 1, color: gc.color, textShadow: `0 0 48px ${gc.color}55` }}>
+                {strength.toFixed(1)}
+              </span>
+              <span style={{ fontSize: 22, fontWeight: 300, color: "var(--text-2)", marginLeft: 6 }}>MPa</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}>
               <div
                 style={{
-                  width: 52, height: 52, borderRadius: 16, margin: "0 auto 14px",
-                  background: "var(--accent-dim)", border: "1px solid var(--border-accent)",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 22, color: "var(--accent)",
+                  display: "inline-flex", alignItems: "center", gap: 10, padding: "8px 18px", borderRadius: 99,
+                  background: `${gc.color}14`, border: `1px solid ${gc.color}38`,
                 }}
               >
-                ◈
+                <div style={{ width: 7, height: 7, borderRadius: "50%", background: gc.color }} />
+                <span style={{ fontWeight: 800, fontSize: 13, color: "var(--text-1)" }}>{grade}</span>
+                <span style={{ fontSize: 11, color: "var(--text-2)", fontWeight: 500 }}>{gc.label}</span>
               </div>
-              <p style={{ fontSize: 13, fontWeight: 700, color: "var(--text-2)", marginBottom: 8 }}>Ready to predict</p>
-              <p style={{ fontSize: 12, color: "var(--text-3)", lineHeight: 1.6 }}>
-                Set your mix parameters and press{" "}
-                <span style={{ color: "var(--accent)", fontWeight: 600 }}>Predict Strength</span>.
-              </p>
-            </Card>
-          )}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+              <Stat label="w/c" value={wc.toFixed(2)} sub="≤0.45 durable" />
+              <Stat label="w/b" value={wb.toFixed(2)} sub={usesScm ? "incl. SCM" : "= w/c"} />
+              <Stat label="Age" value={`${mix.age}d`} sub={mix.age === 28 ? "standard" : "custom"} />
+            </div>
+            {extrapolating.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <Note tone="warning">
+                  {extrapolating.map((k) => FEATURE_LABELS[k]).join(", ")} outside the range of the training data —
+                  the prediction is an extrapolation.
+                </Note>
+              </div>
+            )}
+          </Card>
+
+          {/* Carbon */}
+          <Card style={{ padding: "24px 26px" }}>
+            <Label style={{ marginBottom: 12 }}>Embodied carbon (A1–A3)</Label>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, marginBottom: 18 }}>
+              <div>
+                <span id="carbon-value" style={{ fontSize: 34, fontWeight: 900, color: "var(--text-1)" }}>{fmt(carbon.total, 0)}</span>
+                <span style={{ fontSize: 13, color: "var(--text-2)", marginLeft: 6 }}>kg CO₂e/m³</span>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <span style={{ fontSize: 16, fontWeight: 800, color: "var(--text-1)" }}>{strength > 0 ? fmt(carbon.total / strength, 1) : "–"}</span>
+                <span style={{ fontSize: 11, color: "var(--text-2)", marginLeft: 4 }}>kg CO₂e per MPa</span>
+              </div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {carbonRows.filter((r) => r.value > 0.05).map((r) => (
+                <BarRow
+                  key={r.key}
+                  label={r.label}
+                  value={`${fmt(r.value, 1)} kg · ${Math.round((r.value / carbon.total) * 100)}%`}
+                  fraction={r.value / maxCarbon}
+                  title={`${r.label}: ${fmt(r.value, 1)} kg CO₂e/m³`}
+                />
+              ))}
+            </div>
+            <p style={{ fontSize: 10, color: "var(--text-3)", lineHeight: 1.5, marginTop: 14 }}>
+              Generic emission factors (mostly ICE v3.0), cradle to gate, concrete only.{" "}
+              <Link href="/model#carbon">How it&apos;s calculated</Link>
+            </p>
+          </Card>
+        </div>
+      </div>
+
+      {/* ── Row 2: SHAP + reference ── */}
+      <div className="half-grid" style={{ marginTop: 24 }}>
+        <Card style={{ padding: "26px 24px" }}>
+          <Label style={{ marginBottom: 10 }}>What drives this prediction (SHAP)</Label>
+          <p style={{ fontSize: 12, color: "var(--text-2)", marginBottom: 14, lineHeight: 1.5 }}>
+            How each input moves the prediction from the dataset average (<strong>{exp.baseValue.toFixed(1)} MPa</strong>) to this
+            mix (<strong>{strength.toFixed(1)} MPa</strong>).
+          </p>
+          <div style={{ display: "flex", gap: 16, fontSize: 11, color: "var(--text-2)", marginBottom: 16 }}>
+            <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: "var(--positive)", marginRight: 6 }} />raises strength</span>
+            <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: "var(--negative)", marginRight: 6 }} />lowers strength</span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+            {shapRows.map(({ key, label, val, value }) => {
+              const pos = value >= 0;
+              const pct = (Math.abs(value) / maxShap) * 50;
+              return (
+                <div key={key} title={`${label}: ${pos ? "+" : ""}${value.toFixed(2)} MPa`} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 11 }}>
+                    <span style={{ fontWeight: 600, color: "var(--text-1)" }}>{label}</span>
+                    <span style={{ color: "var(--text-3)", fontSize: 10, fontVariantNumeric: "tabular-nums" }}>{val}</span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ flex: 1, position: "relative", height: 8, background: "rgba(255,255,255,0.03)", borderRadius: 4 }}>
+                      <div style={{ position: "absolute", left: "50%", top: -2, bottom: -2, width: 1, background: "rgba(255,255,255,0.18)" }} />
+                      <div
+                        style={{
+                          position: "absolute", height: "100%",
+                          left: pos ? "50%" : `${50 - pct}%`, width: `${pct}%`,
+                          background: pos ? "var(--positive)" : "var(--negative)",
+                          borderRadius: pos ? "0 4px 4px 0" : "4px 0 0 4px",
+                        }}
+                      />
+                    </div>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-1)", fontVariantNumeric: "tabular-nums", width: 52, textAlign: "right" }}>
+                      {pos ? "+" : "−"}{Math.abs(value).toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Reference comparison */}
+          <Card style={{ padding: "26px 24px" }}>
+            <Label style={{ marginBottom: 10 }}>Compared with a Portland-cement-only mix</Label>
+            <p style={{ fontSize: 12, color: "var(--text-2)", marginBottom: 16, lineHeight: 1.5 }}>
+              Reference: the same mix with all binder as Portland cement (slag and fly ash replaced 1:1), so the
+              binder content and w/b ratio stay the same.
+            </p>
+            {usesScm ? (
+              <table className="data" id="reference-table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th className="num">Your mix</th>
+                    <th className="num">Reference</th>
+                    <th className="num">Change</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Strength</td>
+                    <td className="num">{strength.toFixed(1)} MPa</td>
+                    <td className="num">{ref.strength.toFixed(1)} MPa</td>
+                    <td className="num">{change(strength, ref.strength)}</td>
+                  </tr>
+                  <tr>
+                    <td>EN 206 class</td>
+                    <td className="num">{grade}</td>
+                    <td className="num">{ref.grade}</td>
+                    <td className="num"></td>
+                  </tr>
+                  <tr className="strong">
+                    <td>kg CO₂e/m³</td>
+                    <td className="num">{fmt(carbon.total, 0)}</td>
+                    <td className="num">{fmt(ref.carbon, 0)}</td>
+                    <td className="num">{change(carbon.total, ref.carbon)}</td>
+                  </tr>
+                  <tr>
+                    <td>kg CO₂e per MPa</td>
+                    <td className="num">{strength > 0 ? fmt(carbon.total / strength, 1) : "–"}</td>
+                    <td className="num">{ref.strength > 0 ? fmt(ref.carbon / ref.strength, 1) : "–"}</td>
+                    <td className="num">{strength > 0 && ref.strength > 0 ? change(carbon.total / strength, ref.carbon / ref.strength) : ""}</td>
+                  </tr>
+                </tbody>
+              </table>
+            ) : (
+              <Note>
+                This mix uses only Portland cement, so it is its own reference. Add slag or fly ash to see how much
+                carbon they save and what they do to the predicted strength.
+              </Note>
+            )}
+            {usesScm && ref.outOfRange.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <Note tone="warning">
+                  The reference mix has {ref.mix.cement} kg/m³ cement, above the training data ({MODEL.data_ranges.cement[1]} kg/m³),
+                  so its predicted strength is an extrapolation.
+                </Note>
+              </div>
+            )}
+          </Card>
 
           {/* EN 206 legend */}
           <Card style={{ padding: "18px 20px" }}>
-            <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.18em", textTransform: "uppercase", color: "var(--text-3)", marginBottom: 14 }}>
-              EN 206 Grade Reference
-            </p>
+            <Label style={{ marginBottom: 14 }}>EN 206 grade reference</Label>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {[
                 { range: "C8–C20",  color: "#f6ad55", desc: "Low Strength (fck ≤ 20 MPa)" },
@@ -587,8 +351,8 @@ export default function Home() {
               ].map(({ range, color, desc }) => (
                 <div key={range} style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <div style={{ width: 7, height: 7, borderRadius: "50%", background: color, flexShrink: 0 }} />
-                  <span style={{ fontSize: 11, fontWeight: 700, color, fontFamily: "monospace", minWidth: 52 }}>{range}</span>
-                  <span style={{ fontSize: 11, color: "var(--text-3)" }}>{desc}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-1)", fontFamily: "monospace", minWidth: 60 }}>{range}</span>
+                  <span style={{ fontSize: 11, color: "var(--text-2)" }}>{desc}</span>
                 </div>
               ))}
             </div>
@@ -598,31 +362,14 @@ export default function Home() {
           </Card>
         </div>
       </div>
-
-      {/* ── Footer ── */}
-      <footer
-        style={{
-          position: "relative", zIndex: 1,
-          textAlign: "center", padding: "24px 24px",
-          borderTop: "1px solid rgba(255,255,255,0.05)",
-        }}
-      >
-        <p style={{ fontSize: 11, color: "var(--text-3)" }}>
-          OptiMPa · XGBoost Model trained on UCI Concrete Compressive Strength (I-Cheng Yeh, 1998) with physical feature engineering & leak-free validation
-        </p>
-      </footer>
-
-      {/* Responsive: collapse to single column below 768px */}
-      <style>{`
-        @media (max-width: 768px) {
-          .two-col-grid {
-            grid-template-columns: 1fr !important;
-          }
-          .sticky-panel {
-            position: static !important;
-          }
-        }
-      `}</style>
     </>
   );
+}
+
+/** "+12%" / "−34%" relative to the reference */
+function change(value: number, reference: number) {
+  if (!reference) return "";
+  const pct = ((value - reference) / reference) * 100;
+  if (Math.abs(pct) < 0.5) return "0%";
+  return `${pct > 0 ? "+" : "−"}${Math.abs(pct).toFixed(0)}%`;
 }

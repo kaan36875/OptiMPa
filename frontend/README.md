@@ -1,42 +1,40 @@
-# OptiMPa — Frontend
+# OptiMPa — website
 
-Next.js interface for OptiMPa. The full project description, model details and results are in the [main README](../README.md).
+Next.js site for OptiMPa. The project description, model details and results are in the [main README](../README.md).
 
-You set the 8 mix parameters with sliders and press **Predict Strength**. The page sends a single `POST /explain` request to the API and shows:
+Everything runs in the browser; there is no backend:
 
-- the predicted compressive strength (MPa) and the estimated EN 206 class
-- a SHAP chart of how much each input raised or lowered the prediction
+- **`/` Predictor:** strength prediction, EN 206 class, SHAP breakdown, embodied carbon and the comparison with a Portland-cement-only mix. Updates as you move the sliders.
+- **`/bim` BIM carbon:** open an IFC file and get the concrete volumes and the embodied carbon. The file is read with web-ifc (WebAssembly) and is not uploaded.
+- **`/model` Model:** data, method, results, how carbon is calculated.
 
 ## Running
 
-The API has to be running first (see the main README). Then:
-
 ```bash
 npm install
-npm run dev
+npm run dev        # http://localhost:3000
+npm run build      # production build (all pages are static)
 ```
 
-and open `http://localhost:3000`.
+`npm run dev` and `npm run build` first copy `web-ifc.wasm` from `node_modules` into `public/wasm/` (`scripts/copy-wasm.mjs`).
 
-By default the page calls `http://localhost:8000`. To use a different address, set it in `.env.local`:
-
-```
-NEXT_PUBLIC_API_URL=http://your-api-host:8000
-```
-
-## Example API call
+## Tests
 
 ```bash
-curl -X POST http://localhost:8000/predict \
-  -H "Content-Type: application/json" \
-  -d '{"cement": 350, "slag": 0, "fly_ash": 0, "water": 175,
-       "superplasticizer": 6, "coarse_agg": 1040, "fine_agg": 780, "age": 28}'
+npm run test:model   # browser model vs. Python predictions and SHAP values (400 mixes)
+npm run test:ifc     # IFC reader on ../bim/examples/sample_building.ifc
 ```
 
-```json
-{
-  "strength_mpa": 38.06,
-  "strength_grade": "C30/37",
-  "input_summary": { ... }
-}
-```
+## Where things are
+
+| File | |
+| :--- | :--- |
+| `app/lib/model.json` | Exported XGBoost trees and metrics. Regenerate with `python ml_pipeline/export_web_model.py` after retraining |
+| `app/lib/model.ts` | Prediction, TreeSHAP, EN 206 class |
+| `app/lib/carbon.ts` | Emission factors and the reference mix (kept in sync with `bim/carbon.py`) |
+| `app/lib/ifc.ts` | Concrete elements and volumes from an IFC file (same rules as `bim/ifc_carbon.py`) |
+| `app/lib/mixes.ts` | Slider ranges, default and example mixes |
+
+## Deploying to Vercel
+
+Import the repository and set **Root Directory** to `frontend`. No other settings or environment variables are needed.

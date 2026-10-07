@@ -3,15 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/copy-wasm.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/copy-wasm.mjs",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:model": "node --no-warnings scripts/test-model.mts",
+    "test:ifc": "node --no-warnings scripts/test-ifc.mts"
   },
   "dependencies": {
     "next": "16.2.6",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "web-ifc": "^0.0.78"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

@@ -16,12 +16,45 @@
 
   --text-1: #eeeef8;
   --text-2: #8a8aaa;
-  --text-3: #484868;
+  --text-3: #5e5e82;
 
   --accent:      #63b3ed;
   --accent-dim:  rgba(99,179,237,0.10);
   --accent-glow: rgba(99,179,237,0.22);
+
+  /* Chart colours (dark surface): one series, and the two poles of SHAP */
+  --series-1: #3987e5;
+  --positive: #3987e5;
+  --negative: #e66767;
 }
+
+/* Two-column page grid that collapses on small screens */
+.two-col-grid {
+  position: relative; z-index: 1;
+  max-width: 1100px; margin: 0 auto; padding: 0 24px;
+  display: grid; grid-template-columns: 1fr 380px; gap: 24px; align-items: start;
+}
+.half-grid {
+  position: relative; z-index: 1;
+  max-width: 1100px; margin: 0 auto; padding: 0 24px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start;
+}
+.sticky-panel { position: sticky; top: 80px; }
+@media (max-width: 860px) {
+  .two-col-grid, .half-grid { grid-template-columns: 1fr; padding: 0 16px; }
+  .sticky-panel { position: static; }
+}
+
+a { color: var(--accent); }
+
+table.data { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.data th {
+  text-align: left; font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--text-3); padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+table.data td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.04); color: var(--text-2); }
+table.data td.num, table.data th.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.data tr.strong td { color: var(--text-1); font-weight: 700; }
 
 /* ── Reset ── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

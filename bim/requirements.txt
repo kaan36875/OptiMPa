@@ -1,0 +1,5 @@
+# OptiMPa — BIM / embodied carbon tool
+# Install with: pip install -r requirements.txt
+
+ifcopenshell>=0.8.0
+numpy>=1.24.0
