@@ -1,0 +1,38 @@
+{
+  "xgboost": {
+    "cv_r2": 0.9003,
+    "cv_rmse": 4.9282,
+    "train_r2": 0.9876,
+    "train_rmse": 1.7623,
+    "test_r2": 0.906,
+    "test_rmse": 5.5063
+  },
+  "rf_baseline": {
+    "cv_r2": 0.8603,
+    "cv_rmse": 5.8596,
+    "train_r2": 0.9866,
+    "train_rmse": 1.8265,
+    "test_r2": 0.8637,
+    "test_rmse": 6.6317
+  },
+  "dataset": {
+    "rows": 1005,
+    "mix_designs": 428
+  },
+  "split": {
+    "train_samples": 799,
+    "test_samples": 206,
+    "cv_folds": 5
+  },
+  "best_params": {
+    "n_estimators": 705,
+    "max_depth": 4,
+    "learning_rate": 0.04727639464882368,
+    "subsample": 0.6771895955791627,
+    "colsample_bytree": 0.5303211307965197,
+    "min_child_weight": 4,
+    "gamma": 0.7623503326331531,
+    "reg_alpha": 1.0394294718383327e-07,
+    "reg_lambda": 0.09576675209966896
+  }
+}

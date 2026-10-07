@@ -1,129 +1,122 @@
-# OptiMPa: Physically-Informed Machine Learning for Life Cycle Assessment & Strength Prediction of Concrete
+# OptiMPa: Concrete Compressive Strength Prediction with Physically-Informed ML
 
-[![Python 3.8+](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
-[![Scikit-Learn](https://img.shields.io/badge/Machine%20Learning-Scikit--Learn-orange.svg)](https://scikit-learn.org/)
-[![Pandas](https://img.shields.io/badge/Data%20Analysis-Pandas-green.svg)](https://pandas.pydata.org/)
-[![Status](https://img.shields.io/badge/Status-Refactored%20%26%20Released-success.svg)]()
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
+[![XGBoost](https://img.shields.io/badge/Model-XGBoost-orange.svg)](https://xgboost.readthedocs.io/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi)](https://fastapi.tiangolo.com/)
 [![Next.js](https://img.shields.io/badge/Next.js-black?style=flat&logo=next.js)](https://nextjs.org/)
 
-📌 **Academic Research Open-Source Release (May 2026)**  
-*This repository serves as the official open-source release and refactored codebase for my academic research, originally developed and presented as an academic poster in May 2026. As I prepare to transition into graduate studies in Data Science and Business Analytics, I have refactored and published these predictive models to ensure methodological transparency, encourage peer review, and demonstrate the reproducibility of my analytical pipelines.*
+This is the code behind the academic poster I presented in May 2026. I cleaned it up and published it so the method and the numbers can be checked and reproduced.
 
----
+OptiMPa predicts the compressive strength of a concrete mix (in MPa) from its ingredients and curing age. It is trained on the UCI Concrete Compressive Strength dataset (Yeh, 1998) and has three parts:
 
-## 📖 Project Overview
-
-Predicting the compressive strength and environmental impact (Global Warming Potential - GWP) of reinforced concrete structures traditionally relies on time-consuming physical testing and static, empirical tables. **OptiMPa** bridges the gap between physical civil engineering principles and machine learning by providing a physically-grounded, interpretable, and high-performance ML pipeline.
-
-This codebase migrates a baseline Random Forest regressor to an optimized **XGBoost Regressor** featuring **civil engineering domain feature engineering**, **leak-free validation via GroupKFold split**, **automated hyperparameter tuning (Optuna)**, and **Shapley Additive exPlanations (SHAP)**.
-
-From a business analytics perspective, OptiMPa serves as an MVP that reduces physical R&D testing costs, accelerates time-to-market for sustainable concrete mixes, and provides actionable ESG compliance data.
-
----
+- **`ml_pipeline/`**: training an XGBoost regressor with engineering-based features, grouped cross-validation, Optuna tuning and SHAP
+- **`api/`**: a FastAPI service that serves predictions and per-prediction SHAP explanations
+- **`frontend/`**: a Next.js page where you set the mix with sliders and see the predicted strength, the EN 206 class and the SHAP breakdown
 
 ![Frontend Preview](frontend/preview.png)
 
-## 🔬 Methodological Innovations & Framework
-
-Most concrete predictive pipelines suffer from critical methodological shortcomings:
-1. **Data Leakage in Random Splits:** Concrete mixtures are tested at multiple ages (e.g., 3, 7, 28, 90 days). A naive random split (like `train_test_split`) separates observations of the *same mix formulation* between training and test sets. This results in severe data leakage and artificially inflated metrics.
-2. **Lack of Physical Guardrails:** Standard ML models treat ingredients (cement, slag, water, aggregate) as independent dimensions, failing to capture fundamental physical laws governing hydration and curing.
-3. **Dual-Objective Prediction (Strength + LCA):** While predicting structural capacity, the pipeline simultaneously maps the material proportions to global warming potential (GWP) indices, allowing engineers to visualize the exact carbon cost per MPa of strength gained.
-OptiMPa addresses these bottlenecks through the following pipeline:
+## Method
 
 ```mermaid
 graph TD
-    A[Raw UCI Concrete Data] --> B[Domain Feature Engineering: w/c, w/b ratios]
-    B --> C[Unique Mix Grouping]
-    C --> D[5-Fold GroupKFold Split]
-    D --> E[Optuna Hyperparameter Search]
-    E --> F[Trained XGBoost Regressor]
-    F --> G[Save model.pkl]
-    F --> H[SHAP Global & Local Explanations]
+    A[UCI Concrete Data] --> B[Feature engineering: w/c, w/b, ...]
+    B --> C[Group rows by mix design]
+    C --> D[5-fold GroupKFold]
+    D --> E[Optuna search]
+    E --> F[XGBoost regressor]
+    F --> G[model.pkl]
+    F --> H[SHAP explanations]
 ```
 
-### A. Civil Engineering Feature Engineering
-Rather than expecting the trees to search for complex ratios implicitly, we incorporate physical principles directly:
-- **Water/Cement Ratio ($w/c$):** Primary driver of cement paste porosity and strength (grounded in Abrams' Law).
-- **Water/Binder Ratio ($w/b$):** The ratio of water to total cementitious binder, where $\text{Binder} = \text{Cement} + \text{Slag} + \text{Fly Ash}$.
-- **Aggregate Mass Ratio:** Fine aggregate to coarse aggregate ratio, controlling particle packing and void reduction.
-- **Relative Pozzolanic Ratios:** Proportions of blast furnace slag and fly ash relative to cement mass.
+### Features from concrete technology
 
-### B. Leak-Free Validation Strategy
-We group the observations by unique mix formulations (materials alone, excluding age) using `GroupKFold` split. This ensures that the model is evaluated on **entirely unseen concrete formulations**—providing a robust and honest validation metric appropriate for structural engineering applications.
+On top of the 8 raw inputs, the model gets the ratios that concrete technology says matter, instead of having to find them on its own:
 
----
+- **Water/cement ratio (w/c)**: the main driver of paste porosity and strength (Abrams' law)
+- **Water/binder ratio (w/b)**: water over total binder, where binder = cement + slag + fly ash
+- **Total binder**
+- **Fine/coarse aggregate ratio**: related to particle packing
+- **Slag/cement and fly ash/cement ratios**
 
-## 📊 Comparative Performance Results
+### Avoiding leakage between train and test
 
-Under strict **GroupKFold cross-validation** (evaluated on completely unseen formulations), the optimized pipeline significantly outperforms the baseline Random Forest configuration:
+The same mix is tested at several ages (3, 7, 28, 90 days ...). With a plain random split, the same mix shows up in both train and test, and the scores come out too optimistic. Here rows are grouped by mix design (the 7 ingredients, without age), so every validation and test score is measured on mixes the model has never seen.
 
-| Model Configuration | Validation Split | $R^2$ Score | RMSE (MPa) | Status |
-| :--- | :--- | :---: | :---: | :--- |
-| **Baseline Random Forest** (Raw features only) | Naive Random | ~0.8300 | ~7.20 | Replaced |
-| **Optimized XGBoost** (Physically engineered features) | **Leak-Free GroupKFold** | **0.9126** | **4.92** | **Production** |
+## Results
 
-*Note: An RMSE below 5.0 MPa is considered the industry gold standard for concrete mix pre-design.*
+**Data:** the official UCI file has 1030 rows. After removing its 25 exact duplicate rows, 1005 observations from 428 different mixes remain. 80% of the mixes (342) are used for training and tuning; 20% (86) are held out as a test set. Both models below are evaluated the same way: 5-fold GroupKFold CV on the training mixes, then the held-out mixes.
 
-### Model Performance Visualization
-The predicted vs. actual compressive strength distribution on the held-out mix designs shows tight convergence:
+| Model | CV R² | CV RMSE (MPa) | Test R² | Test RMSE (MPa) |
+| :--- | :---: | :---: | :---: | :---: |
+| Random Forest baseline (8 raw features) | 0.860 | 5.86 | 0.864 | 6.63 |
+| **XGBoost (14 features, tuned)** | **0.900** | **4.93** | **0.906** | **5.51** |
+
+To reproduce, run `python ml_pipeline/train_xgboost.py`. The Optuna search is seeded (50 trials). All numbers and the chosen hyperparameters are in [`ml_pipeline/example_reports/metrics.json`](ml_pipeline/example_reports/metrics.json).
+
+Predicted vs. actual strength on the held-out mixes:
 
 ![XGBoost Test Set Performance](ml_pipeline/example_reports/model_evaluation.png)
 
----
+## Explainability (SHAP)
 
-## 🧠 Explainable AI (XAI) Integration
-
-To establish trustworthiness for civil engineering practitioners, we utilize **TreeSHAP** to quantify how each component shifts the prediction relative to the baseline dataset average. 
-
-### Global Feature Importance
-The SHAP summary plot ranks features by their impact on model output. Crucially, the engineered features ($w/b$ ratio and $w/c$ ratio) are identified as key drivers, validating the introduction of physical domain features.
+TreeSHAP shows how much each input pushes a prediction up or down from the dataset average. In the global summary, curing age has the largest effect, followed by the w/b ratio, total binder and the w/c ratio. Three of the top four are engineered features.
 
 ![SHAP Summary Plot](ml_pipeline/example_reports/shap_summary.png)
 
-### Local Explanations (API + UI)
-For every single prediction requested, the FastAPI backend computes local Shapley values via a TreeExplainer. The interactive React/Next.js frontend, designed with a sleek, minimalist dark-mode aesthetic, maps these contributions in a **bi-directional force-style bar chart**, allowing engineers to inspect exactly which materials (and by how many MPa) boosted or reduced the predicted structural strength.
+For every request, the API also returns local SHAP values, and the frontend draws them as a two-sided bar chart. This shows which ingredients raised or lowered that particular prediction, and by how many MPa.
 
----
+### EN 206 class
 
-## 🛠️ Project Architecture
+The model predicts mean cylinder strength (f<sub>cm</sub>). To assign a class, the characteristic strength is estimated as f<sub>ck</sub> = f<sub>cm</sub> − 8 MPa (EN 1992-1-1, Table 3.1), and the highest EN 206 class that f<sub>ck</sub> meets is reported. This is only an estimate; it does not replace a conformity assessment.
+
+## Limitations and next steps
+
+- The dataset is a single lab dataset of about 1000 rows, so predictions outside its ranges (enforced by the API) should not be trusted.
+- **Life cycle assessment (GWP)** was part of the original poster idea, but it is not implemented in this repository yet. A planned next step is to attach emission factors to each ingredient and show kg CO₂-eq per m³ next to the predicted strength.
+
+## Project structure
 
 ```
 ├── api/
-│   ├── main.py             # FastAPI App, Lifespan loading, /predict & /explain endpoints
-│   ├── model.pkl           # Serialized XGBoost production model
-│   └── requirements.txt    # Production inference dependencies
+│   ├── main.py             # FastAPI app: /health, /predict, /explain
+│   ├── model.pkl           # Trained XGBoost model
+│   └── requirements.txt
 ├── ml_pipeline/
-│   ├── train_xgboost.py    # Training pipeline (Domain features, GroupKFold, Optuna, SHAP)
-│   ├── concrete_data.py    # UCI dataset module
-│   ├── reports/            # Visualizations (model_evaluation.png, shap_summary.png)
-│   └── requirements.txt    # ML training dependencies
+│   ├── train_xgboost.py    # Features, GroupKFold, Optuna, SHAP, export to api/model.pkl
+│   ├── concrete_data.py    # UCI dataset (1030 rows), embedded so training works offline
+│   ├── example_reports/    # Plots and metrics.json from the current model
+│   └── requirements.txt
 └── frontend/
-    ├── app/
-    │   ├── page.tsx        # Next.js React client with SHAP bi-directional UI
-    │   └── globals.css     # CSS Custom Properties and layout styling
-    └── package.json        # Next.js app package definitions
+    ├── app/page.tsx        # Mix sliders, result card, SHAP chart
+    └── package.json
 ```
 
----
+## Running locally
 
-## 🚀 How to Run Locally
+**API**
 
-### 1. Backend API (FastAPI)
-Install the dependencies and launch the Uvicorn server:
 ```bash
 cd api
 pip install -r requirements.txt
 python main.py
 ```
-*API endpoints: `/health` (GET), `/predict` (POST), `/explain` (POST).*
 
-### 2. Frontend Application (Next.js)
-Install the packages and run the development server:
+Endpoints: `GET /health`, `POST /predict`, `POST /explain`. Interactive docs are at `http://localhost:8000/docs`.
+
+**Frontend**
+
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-Open `http://localhost:3000` in your browser to interact with the dashboard.
+
+Then open `http://localhost:3000`.
+
+**Retraining** (optional, a few minutes)
+
+```bash
+cd ml_pipeline
+pip install -r requirements.txt
+python train_xgboost.py
+```

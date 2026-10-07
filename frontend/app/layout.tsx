@@ -11,7 +11,7 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "OptiMPa — Concrete Strength Predictor",
   description:
-    "AI-powered concrete compressive strength prediction. Enter your mix design parameters and get an instant MPa estimate powered by a Random Forest model trained on UCI data.",
+    "AI-powered concrete compressive strength prediction. Enter your mix design parameters and get an instant MPa estimate powered by an XGBoost model trained on UCI data, with SHAP explanations.",
   keywords: ["concrete", "compressive strength", "MPa", "mix design", "civil engineering", "machine learning"],
   authors: [{ name: "OptiMPa" }],
   openGraph: {

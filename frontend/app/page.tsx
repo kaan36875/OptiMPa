@@ -23,6 +23,7 @@ interface PredictionResult {
 
 interface ExplanationResult {
   predicted_strength: number;
+  strength_grade: string;
   base_value: number;
   shap_values: Record<string, number>;
   engineered_features: Record<string, number>;
@@ -88,7 +89,8 @@ const DEFAULTS: ConcreteFeatures = {
 // ─── Grade colour ─────────────────────────────────────────────────────────────
 
 function gradeColor(grade: string) {
-  const n = parseInt(grade.replace("C", "").split("/")[0] ?? "0");
+  // "C30/37" → 30 (fck). Below-class results ("< C8/10") fall into Low Strength.
+  const n = grade.startsWith("<") ? 0 : parseInt(grade.replace("C", "").split("/")[0] ?? "0");
   if (n <= 20) return { color: "#f6ad55", label: "Low Strength" };
   if (n <= 35) return { color: "#68d391", label: "Normal Strength" };
   if (n <= 55) return { color: "#63b3ed", label: "High Strength" };
@@ -204,32 +206,27 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      const [predRes, expRes] = await Promise.all([
-        fetch(`${API}/predict`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(values),
-        }),
-        fetch(`${API}/explain`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(values),
-        })
-      ]);
+      // /explain returns prediction + grade + SHAP, so one model run is enough
+      const expRes = await fetch(`${API}/explain`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values),
+      });
 
-      if (!predRes.ok) {
-        const e = await predRes.json().catch(() => ({}));
-        throw new Error((e as { detail?: string }).detail ?? `Error ${predRes.status}`);
-      }
       if (!expRes.ok) {
-        const e = await expRes.json().catch(() => ({}));
-        throw new Error((e as { detail?: string }).detail ?? `Error ${expRes.status}`);
+        const e = (await expRes.json().catch(() => ({}))) as { detail?: string | { msg: string }[] };
+        // FastAPI validation errors (422) return a list of { loc, msg, ... }
+        const detail = Array.isArray(e.detail) ? e.detail.map((d) => d.msg).join("; ") : e.detail;
+        throw new Error(detail ?? `Error ${expRes.status}`);
       }
 
-      const predData = await predRes.json();
-      const expData = await expRes.json();
+      const expData: ExplanationResult = await expRes.json();
 
-      setResult(predData);
+      setResult({
+        strength_mpa: expData.predicted_strength,
+        strength_grade: expData.strength_grade,
+        input_summary: values,
+      });
       setExplanation(expData);
     } catch (e) {
       setError(
@@ -583,10 +580,10 @@ export default function Home() {
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {[
-                { range: "C8–C20",  color: "#f6ad55", desc: "Low Strength  (< 25 MPa)" },
-                { range: "C25–C35", color: "#68d391", desc: "Normal Structural (25–40 MPa)" },
-                { range: "C40–C55", color: "#63b3ed", desc: "High Strength (40–60 MPa)" },
-                { range: "C60+",    color: "#b794f4", desc: "Ultra-High Strength" },
+                { range: "C8–C20",  color: "#f6ad55", desc: "Low Strength (fck ≤ 20 MPa)" },
+                { range: "C25–C35", color: "#68d391", desc: "Normal Structural (fck 25–35)" },
+                { range: "C40–C55", color: "#63b3ed", desc: "High Strength (fck 40–55)" },
+                { range: "C60+",    color: "#b794f4", desc: "Ultra-High Strength (fck ≥ 60)" },
               ].map(({ range, color, desc }) => (
                 <div key={range} style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <div style={{ width: 7, height: 7, borderRadius: "50%", background: color, flexShrink: 0 }} />
@@ -595,6 +592,9 @@ export default function Home() {
                 </div>
               ))}
             </div>
+            <p style={{ fontSize: 10, color: "var(--text-3)", lineHeight: 1.5, marginTop: 14 }}>
+              Class estimated from fck = predicted mean − 8 MPa (EN 1992-1-1).
+            </p>
           </Card>
         </div>
       </div>

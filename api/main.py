@@ -28,7 +28,7 @@ import pandas as pd
 import shap
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. MODEL LOADING — lifespan context (replaces deprecated @app.on_event)
@@ -39,12 +39,17 @@ _model_store: dict = {}
 
 MODEL_PATH = Path(__file__).parent / "model.pkl"
 
+# Exact column order expected by the XGBoost model (see ml_pipeline/train_xgboost.py)
+FEATURES_ORDER = [
+    "cement", "slag", "fly_ash", "water", "superplasticizer", "coarse_agg", "fine_agg", "age",
+    "wc_ratio", "binder_total", "wb_ratio", "fine_coarse_ratio", "slag_cement_ratio", "fly_ash_cement_ratio"
+]
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Load the XGBoost model and initialize SHAP TreeExplainer at startup.
-    The model object is stored in _model_store["rf"] for backward compatibility.
     """
     if not MODEL_PATH.exists():
         raise FileNotFoundError(
@@ -52,7 +57,13 @@ async def lifespan(app: FastAPI):
             "Run ml_pipeline/train_xgboost.py first to generate the model artifact."
         )
     model = joblib.load(MODEL_PATH)
-    _model_store["rf"] = model
+    # Fail fast if the artifact was trained on a different feature layout
+    trained_features = list(model.get_booster().feature_names or [])
+    if trained_features != FEATURES_ORDER:
+        raise RuntimeError(
+            f"model.pkl feature mismatch.\n  expected: {FEATURES_ORDER}\n  model   : {trained_features}"
+        )
+    _model_store["model"] = model
     _model_store["explainer"] = shap.TreeExplainer(model)
     print(f"[OK] Model and SHAP Explainer loaded from {MODEL_PATH}")
     yield
@@ -68,7 +79,8 @@ app = FastAPI(
     title="OptiMPa — Concrete Strength Prediction API",
     description=(
         "Predicts concrete compressive strength (MPa) from mix design parameters "
-        "using a Random Forest Regressor trained on the UCI Concrete dataset."
+        "using an XGBoost Regressor trained on the UCI Concrete dataset, with "
+        "local SHAP explanations."
     ),
     version="1.0.0",
     lifespan=lifespan,
@@ -150,16 +162,6 @@ class ConcreteFeatures(BaseModel):
         examples=[28],
     )
 
-    @field_validator("water")
-    @classmethod
-    def check_water_cement_ratio(cls, v):
-        """
-        Abrams' Law guardrail: w/c > 0.80 produces concrete too weak to be
-        structurally meaningful. We warn but don't block — the frontend slider
-        already guides users toward sensible ranges.
-        """
-        return v   # Validation is handled by the ge/le bounds above
-
     model_config = {
         "json_schema_extra": {
             "example": {
@@ -180,11 +182,11 @@ class PredictionResponse(BaseModel):
     """
     API response schema.
     strength_mpa  : The model's predicted compressive strength.
-    strength_grade: Nearest EN 206 concrete grade string (C8/10 … C90/105).
+    strength_grade: Highest EN 206 class the mix satisfies (C8/10 … C100/115).
     input_summary : Echo of validated inputs (useful for frontend display).
     """
     strength_mpa: float = Field(..., description="Predicted compressive strength [MPa]")
-    strength_grade: str  = Field(..., description="Nearest EN 206 concrete grade")
+    strength_grade: str  = Field(..., description="Estimated EN 206 strength class")
     input_summary: dict  = Field(..., description="Validated input features")
 
 
@@ -193,6 +195,7 @@ class ExplanationResponse(BaseModel):
     API response schema for SHAP local explainability.
     """
     predicted_strength: float = Field(..., description="Predicted compressive strength [MPa]")
+    strength_grade: str = Field(..., description="Estimated EN 206 strength class")
     base_value: float = Field(..., description="SHAP base value (mean prediction)")
     shap_values: dict[str, float] = Field(..., description="SHAP value for each feature contribution")
     engineered_features: dict[str, float] = Field(..., description="Values of engineered features")
@@ -208,35 +211,63 @@ class HealthResponse(BaseModel):
 # 4. HELPER: EN 206 GRADE CLASSIFICATION
 # ─────────────────────────────────────────────────────────────────────────────
 
-# EN 206 characteristic cylinder strengths → grade label
+# EN 206 strength classes: (fck,cyl [MPa], label), ascending
 _EN206_GRADES = [
-    (12,  "C8/10"),
-    (16,  "C12/15"),
-    (20,  "C16/20"),
-    (25,  "C20/25"),
-    (30,  "C25/30"),
-    (35,  "C28/35"),
-    (40,  "C32/40"),
-    (45,  "C35/45"),
-    (50,  "C40/50"),
-    (55,  "C45/55"),
-    (60,  "C50/60"),
-    (70,  "C55/67"),
-    (80,  "C60/75"),
-    (90,  "C70/85"),
-    (100, "C80/95"),
-    (999, "C90/105"),
+    (8,   "C8/10"),
+    (12,  "C12/15"),
+    (16,  "C16/20"),
+    (20,  "C20/25"),
+    (25,  "C25/30"),
+    (30,  "C30/37"),
+    (35,  "C35/45"),
+    (40,  "C40/50"),
+    (45,  "C45/55"),
+    (50,  "C50/60"),
+    (55,  "C55/67"),
+    (60,  "C60/75"),
+    (70,  "C70/85"),
+    (80,  "C80/95"),
+    (90,  "C90/105"),
+    (100, "C100/115"),
 ]
+
+# EN 1992-1-1 Table 3.1: fck = fcm − 8 MPa. The model predicts a mean
+# (cylinder) strength, so the margin is removed before classification.
+_FCM_FCK_MARGIN = 8.0
+
 
 def _to_en206_grade(mpa: float) -> str:
     """
-    Map a predicted cylinder strength to the nearest EN 206 concrete class.
-    The threshold is the characteristic cylinder strength (fck).
+    Map a predicted mean cylinder strength (fcm) to the highest EN 206 class
+    whose characteristic strength fck it satisfies.
     """
+    fck = mpa - _FCM_FCK_MARGIN
+    grade = "< C8/10"
     for threshold, label in _EN206_GRADES:
-        if mpa <= threshold:
-            return label
-    return "C90/105"
+        if fck >= threshold:
+            grade = label
+    return grade
+
+
+def build_feature_vector(features: "ConcreteFeatures") -> pd.DataFrame:
+    """
+    Assemble the 8 raw inputs into a (1, 14) DataFrame with the physical
+    features engineered exactly as in ml_pipeline/train_xgboost.py.
+    """
+    fv = pd.DataFrame([features.model_dump()])
+    fv["wc_ratio"] = fv["water"] / (fv["cement"] + 1e-6)
+    fv["binder_total"] = fv["cement"] + fv["slag"] + fv["fly_ash"]
+    fv["wb_ratio"] = fv["water"] / (fv["binder_total"] + 1e-6)
+    fv["fine_coarse_ratio"] = fv["fine_agg"] / (fv["coarse_agg"] + 1e-6)
+    fv["slag_cement_ratio"] = fv["slag"] / (fv["cement"] + 1e-6)
+    fv["fly_ash_cement_ratio"] = fv["fly_ash"] / (fv["cement"] + 1e-6)
+    return fv[FEATURES_ORDER]
+
+
+def predict_strength(fv: pd.DataFrame) -> float:
+    """Model prediction clamped to a physically meaningful range (>= 0 MPa)."""
+    raw_prediction = float(_model_store["model"].predict(fv)[0])
+    return round(max(raw_prediction, 0.0), 2)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -251,7 +282,7 @@ async def health_check():
     """
     return HealthResponse(
         status="ok",
-        model_loaded="rf" in _model_store,
+        model_loaded="model" in _model_store,
         version="1.0.0",
     )
 
@@ -263,48 +294,15 @@ async def predict(features: ConcreteFeatures):
 
     Flow:
       1. Pydantic validates the 8 input features (type + range).
-      2. Features are assembled into a (1, 8) DataFrame.
-      3. Physical feature engineering is applied.
-      4. Features are ordered to match training column order.
-      5. The XGBoost model predicts the compressive strength.
-      6. The result is mapped to an EN 206 concrete grade.
-      7. Response is returned as JSON.
+      2. Features are engineered and ordered as in training (build_feature_vector).
+      3. The XGBoost model predicts the compressive strength.
+      4. The result is mapped to an EN 206 concrete grade.
+      5. Response is returned as JSON.
     """
-    if "rf" not in _model_store:
+    if "model" not in _model_store:
         raise HTTPException(status_code=503, detail="Model not loaded yet. Try again in a moment.")
 
-    # Assemble base features DataFrame
-    feature_vector = pd.DataFrame([{
-        "cement"          : features.cement,
-        "slag"            : features.slag,
-        "fly_ash"         : features.fly_ash,
-        "water"           : features.water,
-        "superplasticizer": features.superplasticizer,
-        "coarse_agg"      : features.coarse_agg,
-        "fine_agg"        : features.fine_agg,
-        "age"             : features.age,
-    }])
-
-    # Apply physical feature engineering (must match train_xgboost.py)
-    feature_vector["wc_ratio"] = feature_vector["water"] / (feature_vector["cement"] + 1e-6)
-    feature_vector["binder_total"] = feature_vector["cement"] + feature_vector["slag"] + feature_vector["fly_ash"]
-    feature_vector["wb_ratio"] = feature_vector["water"] / (feature_vector["binder_total"] + 1e-6)
-    feature_vector["fine_coarse_ratio"] = feature_vector["fine_agg"] / (feature_vector["coarse_agg"] + 1e-6)
-    feature_vector["slag_cement_ratio"] = feature_vector["slag"] / (feature_vector["cement"] + 1e-6)
-    feature_vector["fly_ash_cement_ratio"] = feature_vector["fly_ash"] / (feature_vector["cement"] + 1e-6)
-
-    # Force exact column order as expected by XGBoost training
-    FEATURES_ORDER = [
-        "cement", "slag", "fly_ash", "water", "superplasticizer", "coarse_agg", "fine_agg", "age",
-        "wc_ratio", "binder_total", "wb_ratio", "fine_coarse_ratio", "slag_cement_ratio", "fly_ash_cement_ratio"
-    ]
-    feature_vector = feature_vector[FEATURES_ORDER]
-
-    # Predict — model.predict returns shape (1,), so we take [0]
-    raw_prediction: float = float(_model_store["rf"].predict(feature_vector)[0])
-
-    # Clamp to physically meaningful range (strength >= 0.0)
-    strength_mpa = round(max(raw_prediction, 0.0), 2)
+    strength_mpa = predict_strength(build_feature_vector(features))
 
     return PredictionResponse(
         strength_mpa=strength_mpa,
@@ -317,40 +315,13 @@ async def predict(features: ConcreteFeatures):
 async def explain(features: ConcreteFeatures):
     """
     Generates local SHAP explanations for a specific mix design.
+    Also returns the prediction and grade, so a client needs only this call.
     """
-    if "rf" not in _model_store or "explainer" not in _model_store:
+    if "model" not in _model_store or "explainer" not in _model_store:
         raise HTTPException(status_code=503, detail="Model/Explainer not loaded yet.")
 
-    # Assemble base features DataFrame
-    feature_vector = pd.DataFrame([{
-        "cement"          : features.cement,
-        "slag"            : features.slag,
-        "fly_ash"         : features.fly_ash,
-        "water"           : features.water,
-        "superplasticizer": features.superplasticizer,
-        "coarse_agg"      : features.coarse_agg,
-        "fine_agg"        : features.fine_agg,
-        "age"             : features.age,
-    }])
-
-    # Apply physical feature engineering
-    feature_vector["wc_ratio"] = feature_vector["water"] / (feature_vector["cement"] + 1e-6)
-    feature_vector["binder_total"] = feature_vector["cement"] + feature_vector["slag"] + feature_vector["fly_ash"]
-    feature_vector["wb_ratio"] = feature_vector["water"] / (feature_vector["binder_total"] + 1e-6)
-    feature_vector["fine_coarse_ratio"] = feature_vector["fine_agg"] / (feature_vector["coarse_agg"] + 1e-6)
-    feature_vector["slag_cement_ratio"] = feature_vector["slag"] / (feature_vector["cement"] + 1e-6)
-    feature_vector["fly_ash_cement_ratio"] = feature_vector["fly_ash"] / (feature_vector["cement"] + 1e-6)
-
-    # Force exact column order
-    FEATURES_ORDER = [
-        "cement", "slag", "fly_ash", "water", "superplasticizer", "coarse_agg", "fine_agg", "age",
-        "wc_ratio", "binder_total", "wb_ratio", "fine_coarse_ratio", "slag_cement_ratio", "fly_ash_cement_ratio"
-    ]
-    feature_vector = feature_vector[FEATURES_ORDER]
-
-    # Predict
-    raw_prediction: float = float(_model_store["rf"].predict(feature_vector)[0])
-    strength_mpa = round(max(raw_prediction, 0.0), 2)
+    feature_vector = build_feature_vector(features)
+    strength_mpa = predict_strength(feature_vector)
 
     # Compute SHAP Values
     explainer = _model_store["explainer"]
@@ -375,6 +346,7 @@ async def explain(features: ConcreteFeatures):
 
     return ExplanationResponse(
         predicted_strength=strength_mpa,
+        strength_grade=_to_en206_grade(strength_mpa),
         base_value=round(base_value, 2),
         shap_values={k: round(v, 4) for k, v in shap_contribs.items()},
         engineered_features=eng_feats,
