@@ -82,7 +82,7 @@ app = FastAPI(
         "using an XGBoost Regressor trained on the UCI Concrete dataset, with "
         "local SHAP explanations."
     ),
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -283,7 +283,7 @@ async def health_check():
     return HealthResponse(
         status="ok",
         model_loaded="model" in _model_store,
-        version="1.0.0",
+        version="1.1.0",
     )
 
 
